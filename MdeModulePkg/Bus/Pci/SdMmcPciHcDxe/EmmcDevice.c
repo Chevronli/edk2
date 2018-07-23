@@ -526,17 +526,35 @@ EmmcTuningClkForHs200 (
   if (EFI_ERROR (Status)) {
     return Status;
   }
+
+  if(BhtHostPciSupport(PciIo)){
+  	  
+	  HostCtrl2 = 0x03;
+	  Status = SdMmcHcRwMmio (PciIo, Slot, SD_MMC_HC_HOST_CTRL1, FALSE, sizeof (HostCtrl2), &HostCtrl2);
+	  HostCtrl2 = (~0x10);
+	  Status = SdMmcHcAndMmio (PciIo, Slot, 0x110,sizeof (HostCtrl2), &HostCtrl2);
+	  
+	  Status = EmmcSendTuningBlk (PassThru, Slot, 4);
+	  if (EFI_ERROR (Status)) {
+		DEBUG ((DEBUG_ERROR, "EmmcTuningClkForHs200: Send tuning block fails with %r\n", Status));
+		return Status;
+	  }
+
+  }
   //
   // Ask the device to send a sequence of tuning blocks till the tuning procedure is done.
   //
   Retry = 0;
   do {
-    Status = EmmcSendTuningBlk (PassThru, Slot, BusWidth);
-    if (EFI_ERROR (Status)) {
-      DEBUG ((DEBUG_ERROR, "EmmcTuningClkForHs200: Send tuning block fails with %r\n", Status));
-      return Status;
-    }
-
+  	if(!BhtHostPciSupport(PciIo)){
+	    Status = EmmcSendTuningBlk (PassThru, Slot, BusWidth);
+	    if (EFI_ERROR (Status)) {
+	      DEBUG ((DEBUG_ERROR, "EmmcTuningClkForHs200: Send tuning block fails with %r\n", Status));
+	      return Status;
+	    }
+  	} else {
+  		gBS->Stall(5000);
+  	}
     Status = SdMmcHcRwMmio (PciIo, Slot, SD_MMC_HC_HOST_CTRL2, TRUE, sizeof (HostCtrl2), &HostCtrl2);
     if (EFI_ERROR (Status)) {
       return Status;
@@ -1073,7 +1091,12 @@ EmmcSetBusMode (
     //
     // Execute HS200 timing switch procedure
     //
-    Status = EmmcSwitchToHS200 (PciIo, PassThru, Slot, Rca, ClockFreq, BusWidth);
+    if (BhtHostPciSupport(PciIo)){
+    	Status = EmmcSwitchToHS200 (PciIo, PassThru, Slot, Rca, ClockFreq, BusWidth);		
+		Status = SdMmcHcSetBusWidth (PciIo, Slot, BusWidth);
+    	} else {
+    		Status = EmmcSwitchToHS200 (PciIo, PassThru, Slot, Rca, ClockFreq, BusWidth);
+		}
   } else {
     //
     // Execute High Speed timing switch procedure
