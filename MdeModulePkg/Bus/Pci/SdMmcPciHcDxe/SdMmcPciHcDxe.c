@@ -528,6 +528,8 @@ SdMmcPciHcDriverBindingStart (
   UINT32                          RoutineNum;
   BOOLEAN                         MediaPresent;
   BOOLEAN                         Support64BitDma;
+  UINT16                          IntStatus;
+  UINT32                          value;
 
   DEBUG ((DEBUG_INFO, "SdMmcPciHcDriverBindingStart: Start\n"));
 
@@ -666,6 +668,41 @@ SdMmcPciHcDriverBindingStart (
       Private->Slot[Slot].Initialized = FALSE;
     }
   }
+  extern BOOLEAN BHT_Debug;
+  if(BhtHostPciSupport(Private->PciIo)&&BHT_Debug){
+		SdMmcHcRwMmio (Private->PciIo,0,0x110,TRUE,sizeof (value),&value);
+		Print(L"0x110: 0x%x\n",value);
+
+		SdMmcHcRwMmio (Private->PciIo,0,0x114,TRUE,sizeof (value),&value);
+		Print(L"0x114: 0x%x\n",value);
+		
+		SdMmcHcRwMmio (Private->PciIo,0,0x1a8,TRUE,sizeof (value),&value);
+		Print(L"MEM 1A8:: 0x%x\n",value);
+		SdMmcHcRwMmio (Private->PciIo,0,0x1ac,TRUE,sizeof (value),&value);
+		Print(L"MEM 1AC:: 0x%x\n",value);
+		SdMmcHcRwMmio (Private->PciIo,0,0x1B0,TRUE,sizeof (value),&value);
+		Print(L"MEM 1B0:: 0x%x\n",value);
+
+		Print(L" - pcr 0x304 = 0x%08x\n", PciBhtRead32(Private->PciIo, 0x304));
+		Print(L" - pcr 0x328 = 0x%08x\n", PciBhtRead32(Private->PciIo, 0x328));
+		Print(L" - pcr 0x3e4 = 0x%08x\n", PciBhtRead32(Private->PciIo, 0x3e4));
+
+		SdMmcHcRwMmio (Private->PciIo,0,0x040,TRUE,sizeof (value),&value);
+		Print(L"0x40: 0x%x\n",value);
+		
+		SdMmcHcRwMmio (Private->PciIo,0,SD_MMC_HC_PRESENT_STATE,TRUE,sizeof (value),&value);
+		Print(L"Present State: 0x%x\n",value);
+		SdMmcHcRwMmio (Private->PciIo,0,SD_MMC_HC_HOST_CTRL1,TRUE,sizeof (IntStatus),&IntStatus);
+		Print(L"Power&Host1: 0x%x\n",IntStatus);
+		SdMmcHcRwMmio (Private->PciIo,0,SD_MMC_HC_CLOCK_CTRL,TRUE,sizeof (IntStatus),&IntStatus);
+		Print(L"CLK: 0x%x\n",IntStatus);
+		SdMmcHcRwMmio (Private->PciIo,0,SD_MMC_HC_TIMEOUT_CTRL,TRUE,sizeof (IntStatus),&IntStatus);
+		Print(L"SWR&Timeout: 0x%x\n",IntStatus);
+		SdMmcHcRwMmio (Private->PciIo,0,SD_MMC_HC_NOR_INT_STS,TRUE,sizeof (value),&value);
+		Print(L"INR&IER: 0x%x\n",value);
+		SdMmcHcRwMmio (Private->PciIo,0,SD_MMC_HC_HOST_CTRL2,TRUE,sizeof (IntStatus),&IntStatus);
+		Print(L"Host2: 0x%x\n",IntStatus);
+  	}
 
   //
   // Enable 64-bit DMA support in the PCI layer if this controller

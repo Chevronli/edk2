@@ -16,6 +16,9 @@
 **/
 
 #include "SdMmcPciHcDxe.h"
+int g_deviceId = 0;
+BOOLEAN BHT_Debug = 0;
+
 
 /**
   Dump the content of SD/MMC host controller's Capability Register.
@@ -741,7 +744,7 @@ SdMmcHcClockSupply (
   //
   // Set SDCLK Frequency Select and Internal Clock Enable fields in Clock Control register.
   //
-  if ((ControllerVer & 0xFF) == 2) {
+  if (((ControllerVer & 0xFF) == 2) || ((ControllerVer & 0xFF) == 3)) {
     ASSERT (Divisor <= 0x3FF);
     ClockCtrl = ((Divisor & 0xFF) << 8) | ((Divisor & 0x300) >> 2);
   } else if (((ControllerVer & 0xFF) == 0) || ((ControllerVer & 0xFF) == 1)) {
@@ -987,6 +990,22 @@ SdMmcHcInitPowerVoltage (
   //
   Status = SdMmcHcPowerControl (PciIo, Slot, MaxVoltage);
 
+  if (BhtHostPciSupport(PciIo)){
+	  HostCtrl2  = BIT3;
+	  Status = SdMmcHcOrMmio (PciIo, Slot, SD_MMC_HC_HOST_CTRL2, sizeof (HostCtrl2), &HostCtrl2);
+	  gBS->Stall (5000);
+	  if (EFI_ERROR (Status)) {
+		return Status;
+	  }
+	  
+	  PciBhtOr32(PciIo, 0xEC, 0x3);
+	  PciBhtOr32(PciIo, 0x308, BIT4);
+	  PciBhtAnd32(PciIo, 0x304,0x0000FFFF);
+	  PciBhtOr32(PciIo, 0x304,0x25100000);	  
+	  PciBhtOr32(PciIo, 0x3E4, BIT22);
+  }
+  
+
   return Status;
 }
 
@@ -1038,16 +1057,27 @@ SdMmcHcInitHost (
 {
   EFI_STATUS       Status;
 
+  if (BhtHostPciSupport(PciIo)){
+
+	  Status = SdMmcHcInitPowerVoltage (PciIo, Slot, Capability);
+		  if (EFI_ERROR (Status)) {
+		    return Status;
+	 	 }
+
+  }
+
   Status = SdMmcHcInitClockFreq (PciIo, Slot, Capability);
   if (EFI_ERROR (Status)) {
     return Status;
   }
 
-  Status = SdMmcHcInitPowerVoltage (PciIo, Slot, Capability);
-  if (EFI_ERROR (Status)) {
-    return Status;
+  if (!BhtHostPciSupport(PciIo)){
+	  Status = SdMmcHcInitPowerVoltage (PciIo, Slot, Capability);
+	  if (EFI_ERROR (Status)) {
+	    return Status;
+	  }
   }
-
+  
   Status = SdMmcHcInitTimeoutCtrl (PciIo, Slot);
   return Status;
 }
@@ -1919,5 +1949,268 @@ SdMmcWaitTrbResult (
   }
 
   return EFI_TIMEOUT;
+}
+
+BOOLEAN BhtHostPciSupport(EFI_PCI_IO_PROTOCOL *PciIo)
+{
+	PCI_TYPE00		Pci;
+
+	PciIo->Pci.Read (PciIo, EfiPciIoWidthUint32,		
+				  0, sizeof Pci / sizeof (UINT32), &Pci);
+
+	DEBUG ((DEBUG_INFO, "check device %04x:%04x\n", Pci.Hdr.VendorId, Pci.Hdr.DeviceId));
+
+	if (Pci.Hdr.VendorId != 0x1217)
+		goto end;
+
+	switch (Pci.Hdr.DeviceId)
+	{
+		case 0x8420:	//PCI_DEV_ID_SDS0
+		case 0x8421:	//PCI_DEV_ID_SDS1
+		case 0x8520:	//PCI_DEV_ID_FJ2
+		case 0x8620:	//PCI_DEV_ID_SB0
+		case 0x8621:	//PCI_DEV_ID_SB1
+			g_deviceId = Pci.Hdr.DeviceId;
+			BHT_Debug = 1;
+			return 1;
+		default:
+			break;
+	}
+
+	end:
+	return 0;
+}
+
+
+UINT32 bht_readl(EFI_PCI_IO_PROTOCOL *PciIo, UINT32 offset)
+{
+	UINT32 arg;
+	PciIo->Mem.Read(PciIo,EfiPciIoWidthUint32,1,offset,1,&arg);
+	return arg;
+}
+
+void bht_writel(EFI_PCI_IO_PROTOCOL *PciIo, UINT32 offset, UINT32 value)
+{
+	PciIo->Mem.Write(PciIo,EfiPciIoWidthUint32,1,offset,1,&value);
+}
+
+
+UINT32 PciBhtRead32(EFI_PCI_IO_PROTOCOL *PciIo, UINT32 offset)
+{
+	UINT32 i = 0;
+	UINT32 tmp[3] = {0};
+
+	if((g_deviceId == PCI_DEV_ID_SDS0) ||
+			(g_deviceId == PCI_DEV_ID_SDS1) ||
+			(g_deviceId == PCI_DEV_ID_FJ2) ||
+			(g_deviceId == PCI_DEV_ID_SB0) ||
+			(g_deviceId == PCI_DEV_ID_SB1))
+	{
+		// For Sandstorm, HW implement a mapping method by memory space reg to access PCI reg.
+		// Enable mapping
+	
+		// Check function conflict
+		if((g_deviceId == PCI_DEV_ID_SDS0) ||
+				(g_deviceId == PCI_DEV_ID_FJ2) ||
+				(g_deviceId == PCI_DEV_ID_SB0) ||
+				(g_deviceId == PCI_DEV_ID_SB1))
+		{
+			i = 0;
+			bht_writel(PciIo, BHT_PCIRMappingEn, 0x40000000);
+			while((bht_readl(PciIo, BHT_PCIRMappingEn) & 0x40000000) == 0)
+			{
+				if(i == 5)
+				{
+					goto RD_DIS_MAPPING;
+				}
+						gBS->Stall(1000);
+				i++;
+					bht_writel(PciIo, BHT_PCIRMappingEn, 0x40000000);
+	
+			}
+		}
+		else if(g_deviceId == PCI_DEV_ID_SDS1)
+		{
+			i = 0;
+			bht_writel(PciIo, BHT_PCIRMappingEn, 0x20000000);
+			while((bht_readl(PciIo, BHT_PCIRMappingEn) & 0x20000000) == 0)
+			{
+				if(i == 5)
+				{
+					goto RD_DIS_MAPPING;
+				}
+				gBS->Stall(1000);
+				i++;
+				bht_writel(PciIo, BHT_PCIRMappingEn, 0x20000000);
+			}
+		}
+	
+		// Check last operation is complete
+		i = 0;
+		while(bht_readl(PciIo, BHT_PCIRMappingCtl) & 0xc0000000)
+		{
+			if(i == 5)
+			{
+				goto RD_DIS_MAPPING;
+			}
+			gBS->Stall(1000);
+			i += 1;
+		}
+	
+		// Set register address
+		tmp[0] |= 0x40000000;
+		tmp[0] |= offset;
+		bht_writel(PciIo, BHT_PCIRMappingCtl, tmp[0]);
+	
+		// Check read is complete
+		i = 0;
+		while(bht_readl(PciIo, BHT_PCIRMappingCtl) & 0x40000000)
+		{
+			if(i == 5)
+			{
+				goto RD_DIS_MAPPING;
+			}
+			gBS->Stall(1000);
+			i += 1;
+		}
+	
+		// Get PCIR value
+		tmp[1] = bht_readl(PciIo, BHT_PCIRMappingVal);
+	
+RD_DIS_MAPPING:
+		// Disable mapping
+		bht_writel(PciIo, BHT_PCIRMappingEn, 0x80000000);
+	
+		return tmp[1];
+	}
+	
+	return tmp[0];	
+}
+
+void PciBhtWrite32(EFI_PCI_IO_PROTOCOL *PciIo, UINT32 offset, UINT32 value)
+{
+	UINT32 tmp = 0;
+    UINT32 i = 0;
+
+	if((g_deviceId == PCI_DEV_ID_SDS0) ||
+			(g_deviceId == PCI_DEV_ID_SDS1) ||
+			(g_deviceId == PCI_DEV_ID_FJ2) ||
+			(g_deviceId == PCI_DEV_ID_SB0) ||
+			(g_deviceId == PCI_DEV_ID_SB1))
+    {
+        // For Sandstorm, HW implement a mapping method by memory space reg to access PCI reg.
+        // Upper caller doesn't need to set 0xD0.
+
+        // Enable mapping
+
+        // Check function conflict
+		if((g_deviceId == PCI_DEV_ID_SDS0) ||
+				(g_deviceId == PCI_DEV_ID_FJ2) ||
+				(g_deviceId == PCI_DEV_ID_SB0) ||
+				(g_deviceId == PCI_DEV_ID_SB1))
+        {
+            i = 0;
+            bht_writel(PciIo, BHT_PCIRMappingEn, 0x40000000);
+            while((bht_readl(PciIo, BHT_PCIRMappingEn) & 0x40000000) == 0)
+            {
+                if(i == 5)
+                {
+                    goto WR_DIS_MAPPING;
+                }
+
+                gBS->Stall(1000);
+                i++;
+                bht_writel(PciIo, BHT_PCIRMappingEn, 0x40000000);
+            }
+        }
+        else if(g_deviceId == PCI_DEV_ID_SDS1)
+        {
+            i = 0;
+            bht_writel(PciIo, BHT_PCIRMappingEn, 0x20000000);
+
+            while((bht_readl(PciIo, BHT_PCIRMappingEn) & 0x20000000) == 0)
+            {
+                if(i == 5)
+                {
+                    goto WR_DIS_MAPPING;
+                }
+
+                gBS->Stall(1000);
+                i++;
+                bht_writel(PciIo, BHT_PCIRMappingEn, 0x20000000);
+            }
+        }
+
+        // Enable MEM access
+        bht_writel(PciIo, BHT_PCIRMappingVal, 0x80000000);
+        bht_writel(PciIo, BHT_PCIRMappingCtl, 0x800000D0);
+
+        // Check last operation is complete
+        i = 0;
+        while(bht_readl(PciIo, BHT_PCIRMappingCtl) & 0xc0000000)
+        {
+            if(i == 5)
+            {
+                goto WR_DIS_MAPPING;
+            }
+            gBS->Stall(1000);
+            i += 1;
+        }
+
+        // Set write value
+        bht_writel(PciIo, BHT_PCIRMappingVal, value);
+        // Set register address
+        tmp |= 0x80000000;
+        tmp |= offset;
+        bht_writel(PciIo, BHT_PCIRMappingCtl, tmp);
+
+        // Check write is complete
+        i = 0;
+        while(bht_readl(PciIo, BHT_PCIRMappingCtl) & 0x80000000)
+        {
+            if(i == 5)
+            {
+                goto WR_DIS_MAPPING;
+            }
+            gBS->Stall(1000);
+            i += 1;
+        }
+
+WR_DIS_MAPPING:
+        // Disable MEM access
+        bht_writel(PciIo, BHT_PCIRMappingVal, 0x80000001);
+        bht_writel(PciIo, BHT_PCIRMappingCtl, 0x800000D0);
+
+        // Check last operation is complete
+        i = 0;
+        while(bht_readl(PciIo, BHT_PCIRMappingCtl) & 0xc0000000)
+        {
+            if(i == 5)
+            {
+                break;
+            }
+            gBS->Stall(1000);
+            i += 1;
+        }
+
+        // Disable function conflict
+
+        // Disable mapping
+        bht_writel(PciIo, BHT_PCIRMappingEn, 0x80000000);
+    }
+}
+
+void PciBhtOr32(EFI_PCI_IO_PROTOCOL *PciIo, UINT32 offset, UINT32 value)
+{
+	UINT32 arg;
+	arg = PciBhtRead32(PciIo, offset);
+	PciBhtWrite32(PciIo, offset, value | arg);
+}
+
+void PciBhtAnd32(EFI_PCI_IO_PROTOCOL *PciIo, UINT32 offset, UINT32 value)
+{
+	UINT32 arg;
+	arg = PciBhtRead32(PciIo, offset);
+	PciBhtWrite32(PciIo, offset, value & arg);
 }
 

@@ -1085,7 +1085,7 @@ SdCardIdentification (
     return Status;
   }
 
-  if ((ControllerVer & 0xFF) == 2) {
+  if (((ControllerVer & 0xFF) == 2) || ((ControllerVer & 0xFF) == 3)) {
     S18r = TRUE;
   } else if (((ControllerVer & 0xFF) == 0) || ((ControllerVer & 0xFF) == 1)) {
     S18r = FALSE;
